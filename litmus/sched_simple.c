@@ -1,5 +1,6 @@
 #include <litmus/sched_plugin.h>
 #include <litmus/preempt.h>
+#include <litmus/debug_trace.h>
 
 static struct task_struct* simple_schedule(struct task_struct * prev)
 {
@@ -15,6 +16,8 @@ static struct task_struct* simple_schedule(struct task_struct * prev)
 
 static long simple_admit_task(struct task_struct *tsk)
 {
+  TRACE_TASK(tsk, "rejected by simple plugin.\n");
+
   /* Reject every task. */
   return -EINVAL;
 }
