@@ -9,6 +9,7 @@
 #include <litmus/debug_trace.h>
 #include <litmus/jobs.h>
 #include <litmus/budget.h>
+#include <litmus/litmus_proc.h>
 
 struct pedf_cpu_state {
   rt_domain_t     local_queues;
@@ -23,6 +24,13 @@ static DEFINE_PER_CPU(struct pedf_cpu_state, pedf_cpu_state);
 //#define local_cpu_state()       (&__get_cpu_var(pedf_cpu_state))
 #define local_cpu_state()   this_cpu_ptr(&pedf_cpu_state)
 
+static struct domain_proc_info pedf_domain_proc_info;
+
+static long pedf_get_domain_proc_info(struct domain_proc_info **ret)
+{
+  *ret = &pedf_domain_proc_info;
+  return 0;
+}
 
 /* this helper is called when task `prev` exhausted its budget or when
  * it signaled a job completion */
@@ -118,6 +126,22 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 }
 
 
+static int pedf_check_for_preemption_on_release(rt_domain_t *local_queues)
+{
+  struct pedf_cpu_state *state = container_of(local_queues, struct pedf_cpu_state,
+					      local_queues);
+
+  /* Because this is a callback from rt_domain_t we already hold
+   * the necessary lock for the ready queue.
+   */
+
+  if (edf_preemption_needed(local_queues, state->scheduled)) {
+    preempt_if_preemptable(state->scheduled, state->cpu);
+    return 1;
+  } else
+    return 0;
+}
+
 static void pedf_task_new(struct task_struct *tsk, int on_runqueue,
                           int is_running)
 {
@@ -145,6 +169,9 @@ static void pedf_task_new(struct task_struct *tsk, int on_runqueue,
     pedf_requeue(tsk, state);
   }
 
+  if (edf_preemption_needed(&state->local_queues, state->scheduled))
+    preempt_if_preemptable(state->scheduled, state->cpu);
+
   raw_spin_unlock_irqrestore(&state->local_queues.ready_lock, flags);
 }
 
@@ -166,7 +193,6 @@ static void pedf_task_exit(struct task_struct *tsk)
 
   raw_spin_unlock_irqrestore(&state->local_queues.ready_lock, flags);
 }
-
 
 /* Called when the state of tsk changes back to TASK_RUNNING.
  * We need to requeue the task.
@@ -198,35 +224,48 @@ static void pedf_task_resume(struct task_struct  *tsk)
   /* This check is required to avoid races with tasks that resume before
    * the scheduler "noticed" that it resumed. That is, the wake up may
    * race with the call to schedule(). */
-  if (state->scheduled != tsk)
+  if (state->scheduled != tsk) {
     pedf_requeue(tsk, state);
+    if (edf_preemption_needed(&state->local_queues, state->scheduled))
+      preempt_if_preemptable(state->scheduled, state->cpu);
+  }
 
   raw_spin_unlock_irqrestore(&state->local_queues.ready_lock, flags);
 }
 
 
-static int pedf_check_for_preemption_on_release(rt_domain_t *local_queues)
-{
-  struct pedf_cpu_state *state = container_of(local_queues, struct pedf_cpu_state,
-					      local_queues);
-
-  /* Because this is a callback from rt_domain_t we already hold
-   * the necessary lock for the ready queue.
-   */
-
-  if (edf_preemption_needed(local_queues, state->scheduled)) {
-    preempt_if_preemptable(state->scheduled, state->cpu);
-    return 1;
-  } else
-    return 0;
-}
-
 static long pedf_admit_task(struct task_struct *tsk)
 {
-  TRACE_TASK(tsk, "rejected by pedf plugin.\n");
+  if (task_cpu(tsk) == get_partition(tsk)) {
+    TRACE_TASK(tsk, "accepted by p-edf plugin.\n");
+    return 0;
+  } else
+    return -EINVAL;
+}
 
-  /* Reject every task. */
-  return -EINVAL;
+static void pedf_setup_domain_proc(void)
+{
+  int i, cpu;
+  int num_rt_cpus = num_online_cpus();
+
+  struct cd_mapping *cpu_map, *domain_map;
+
+  memset(&pedf_domain_proc_info, 0, sizeof(pedf_domain_proc_info));
+  init_domain_proc_info(&pedf_domain_proc_info, num_rt_cpus, num_rt_cpus);
+  pedf_domain_proc_info.num_cpus = num_rt_cpus;
+  pedf_domain_proc_info.num_domains = num_rt_cpus;
+
+  i = 0;
+  for_each_online_cpu(cpu) {
+    cpu_map = &pedf_domain_proc_info.cpu_to_domains[i];
+    domain_map = &pedf_domain_proc_info.domain_to_cpus[i];
+
+    cpu_map->id = cpu;
+    domain_map->id = i;
+    cpumask_set_cpu(i, cpu_map->mask);
+    cpumask_set_cpu(cpu, domain_map->mask);
+    ++i;
+  }
 }
 
 static long pedf_activate_plugin(void)
@@ -241,9 +280,19 @@ static long pedf_activate_plugin(void)
 
     state->cpu = cpu;
     state->scheduled = NULL;
-    edf_domain_init(&state->local_queues, NULL, NULL);
+    edf_domain_init(&state->local_queues, 
+		    pedf_check_for_preemption_on_release, 
+		    NULL);
   }
 
+  pedf_setup_domain_proc();
+
+  return 0;
+}
+
+static long pedf_deactivate_plugin(void)
+{
+  destroy_domain_proc_info(&pedf_domain_proc_info);
   return 0;
 }
 
@@ -254,7 +303,9 @@ static struct sched_plugin pedf_plugin = {
   .admit_task             = pedf_admit_task,
   .task_new               = pedf_task_new,
   .task_exit              = pedf_task_exit,
+  .get_domain_proc_info   = pedf_get_domain_proc_info,
   .activate_plugin        = pedf_activate_plugin,
+  .deactivate_plugin      = pedf_deactivate_plugin,
 };
 
 static int __init init_pedf(void)
