@@ -80,9 +80,9 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 	
 	exists = local_state->scheduled != NULL;
 	self_suspends = exists && !is_current_running();
-	out_of_time   = exists && budget_enforced(prev)
-		&& budget_exhausted(prev);
-	job_completed = exists && is_completed(prev);
+	out_of_time   = exists && budget_enforced(local_state->scheduled)
+		&& budget_exhausted(local_state->scheduled);
+	job_completed = exists && is_completed(local_state->scheduled);
 	
 	/* preempt is true if task `prev` has lower priority than something on
 	 * the ready queue. */
@@ -97,7 +97,7 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 	
 	/* also check for (in-)voluntary job completions */
 	if (out_of_time || job_completed) {
-		pedf_job_completion(prev, out_of_time);
+		pedf_job_completion(local_state->scheduled, !job_completed);
 		resched = 1;
 	}
 	
@@ -106,7 +106,7 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 		 * queue, which it does if it did not self_suspend.
 		 */
 		if (exists && !self_suspends)
-			pedf_requeue(prev, local_state);
+			pedf_requeue(local_state->scheduled, local_state);
 		next = __take_ready(&local_state->local_queues);
 	} else
 		/* No preemption is required. */
