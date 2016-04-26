@@ -38,6 +38,9 @@ static long pedf_get_domain_proc_info(struct domain_proc_info **ret)
  * it signaled a job completion */
 static void pedf_job_completion(struct task_struct *prev, int budget_exhausted)
 {
+	/* the task hasn't completed yet */
+	tsk_rt(prev)->completed = 0;
+	
 	/* call common helper code to compute the next release time, deadline,
 	 * etc. */
 	prepare_for_next_period(prev);
@@ -48,6 +51,7 @@ static void pedf_job_completion(struct task_struct *prev, int budget_exhausted)
  */
 static void pedf_requeue(struct task_struct *tsk, struct pedf_cpu_state *cpu_state)
 {
+	tsk_rt(tsk)->completed = 0;
 	if (is_released(tsk, litmus_clock())) {
 		/* Uses __add_ready() instead of add_ready() because we already
 		 * hold the ready lock. */
@@ -310,8 +314,39 @@ static struct sched_plugin pedf_plugin = {
 	.deactivate_plugin      = pedf_deactivate_plugin,
 };
 
+
+/* Define two helper functions for init_pedf() */
+static void pedf_domain_init(struct pedf_cpu_state *pedf,
+							 check_resched_needed_t check,
+							 release_jobs_t release,
+							 int cpu)
+{
+	edf_domain_init(&pedf->local_queues, check, release);
+	pedf->cpu = cpu;
+	pedf->scheduled = NULL;
+}
+
+static int pedf_check_resched(rt_domain_t *edf)
+{
+	/* Return the container structure of the input pointer "edf" */
+	struct pedf_cpu_state *pedf = container_of(edf, struct pedf_cpu_state, local_queues);
+
+	if (edf_preemption_needed(&pedf->local_queues, pedf->scheduled)) {
+		preempt_if_preemptable(pedf->scheduled, pedf->cpu);
+		return 1;
+	} else
+		return 0;
+}
+	
 static int __init init_pedf(void)
 {
+	int i;
+	
+	/* Init each domain (cpu) */
+	for (i = 0; i < num_online_cpus(); i++) {
+		pedf_domain_init(cpu_state_for(i), pedf_check_resched, NULL, i);
+	}
+	
 	return register_sched_plugin(&pedf_plugin);
 }
 
