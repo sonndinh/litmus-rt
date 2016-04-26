@@ -101,7 +101,7 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 		resched = 1;
 	}
 	
-	if (resched) {
+	if (resched || !exists) {
 		/* First check if the previous task goes back onto the ready
 		 * queue, which it does if it did not self_suspend.
 		 */
@@ -110,7 +110,9 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 		next = __take_ready(&local_state->local_queues);
 	} else
 		/* No preemption is required. */
-		next = local_state->scheduled;
+		if (exists)
+			next = prev;
+		//		next = local_state->scheduled;
 	
 	local_state->scheduled = next;
 	
@@ -189,9 +191,15 @@ static void pedf_task_exit(struct task_struct *tsk)
 	
 	/* acquire the lock protecting the state and disable interrupts */
 	raw_spin_lock_irqsave(&state->local_queues.ready_lock, flags);
+	if (is_queued(tsk)) {
+		rt_domain_t *edf = &(cpu_state_for(get_partition(tsk))->local_queues);
+		remove(edf, tsk);
+	}
 	
 	if (state->scheduled == tsk)
 		state->scheduled = NULL;
+
+	preempt_if_preemptable(state->scheduled, state->cpu);
 	
 	/* For simplicity, we assume here that the task is no longer queued anywhere else. This
 	 * is the case when tasks exit by themselves; additional queue management is
@@ -276,6 +284,7 @@ static void pedf_setup_domain_proc(void)
 
 static long pedf_activate_plugin(void)
 {
+	/*
 	int cpu;
 	struct pedf_cpu_state *state;
 	
@@ -290,6 +299,7 @@ static long pedf_activate_plugin(void)
 						pedf_check_for_preemption_on_release, 
 						NULL);
 	}
+	*/
 	
 	pedf_setup_domain_proc();
 	
