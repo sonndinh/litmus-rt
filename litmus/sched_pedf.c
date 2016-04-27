@@ -36,14 +36,17 @@ static long pedf_get_domain_proc_info(struct domain_proc_info **ret)
 
 /* this helper is called when task `prev` exhausted its budget or when
  * it signaled a job completion */
-static void pedf_job_completion(struct task_struct *prev, int budget_exhausted)
+static void pedf_job_completion(struct task_struct *tsk, int budget_exhausted)
 {
+	sched_trace_task_completion(tsk, budget_exhausted);
+	TRACE_TASK(tsk, "job_completion(forced=%d).\n", budget_exhausted);
+
 	/* the task hasn't completed yet */
-	tsk_rt(prev)->completed = 0;
+	tsk_rt(tsk)->completed = 0;
 	
 	/* call common helper code to compute the next release time, deadline,
 	 * etc. */
-	prepare_for_next_period(prev);
+	prepare_for_next_period(tsk);
 }
 
 
@@ -51,14 +54,17 @@ static void pedf_job_completion(struct task_struct *prev, int budget_exhausted)
  */
 static void pedf_requeue(struct task_struct *tsk, struct pedf_cpu_state *cpu_state)
 {
+	if (tsk->state != TASK_RUNNING)
+		TRACE_TASK(tsk, "requeue: !TASK_RUNNING\n");
+	
 	tsk_rt(tsk)->completed = 0;
 	if (is_early_releasing(tsk) || is_released(tsk, litmus_clock())) {
 		/* Uses __add_ready() instead of add_ready() because we already
 		 * hold the ready lock. */
-		__add_ready(&cpu_state->local_queues, tsk);
+		__add_ready(&(cpu_state->local_queues), tsk);
 	} else {
 		/* Uses add_release() because we DON'T have the release lock. */
-		add_release(&cpu_state->local_queues, tsk);
+		add_release(&(cpu_state->local_queues), tsk);
 	}
 }
 
@@ -105,7 +111,7 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 		/* First check if the previous task goes back onto the ready
 		 * queue, which it does if it did not self_suspend.
 		 */
-		if (exists && !self_suspends)
+		if (local_state->scheduled && !self_suspends)
 			pedf_requeue(local_state->scheduled, local_state);
 		next = __take_ready(&local_state->local_queues);
 	} else
@@ -159,14 +165,14 @@ static void pedf_task_new(struct task_struct *tsk, int on_runqueue,
 	
 	TRACE_TASK(tsk, "is a new RT task %llu (on_rq:%d, running:%d)\n",
 			   litmus_clock(), on_runqueue, is_running);
-	
-	/* acquire the lock protecting the state and disable interrupts */
-	raw_spin_lock_irqsave(&state->local_queues.ready_lock, flags);
-	
+
 	now = litmus_clock();
 	
 	/* the first job exists starting as of right now */
 	release_at(tsk, now);
+
+	/* acquire the lock protecting the state and disable interrupts */
+	raw_spin_lock_irqsave(&state->local_queues.ready_lock, flags);
 	
 	if (is_running) {
 		/* if tsk is running, then no other task can be running
