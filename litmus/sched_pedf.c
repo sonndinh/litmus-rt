@@ -18,7 +18,7 @@ struct pedf_cpu_state {
 	struct task_struct* scheduled;
 };
 
-static DEFINE_PER_CPU(struct pedf_cpu_state, pedf_cpu_states);
+DEFINE_PER_CPU(struct pedf_cpu_state, pedf_cpu_states);
 
 #define cpu_state_for(cpu_id)   (&per_cpu(pedf_cpu_states, cpu_id))
 #define local_cpu_state()   (this_cpu_ptr(&pedf_cpu_states))
@@ -52,7 +52,7 @@ static void pedf_job_completion(struct task_struct *prev, int budget_exhausted)
 static void pedf_requeue(struct task_struct *tsk, struct pedf_cpu_state *cpu_state)
 {
 	tsk_rt(tsk)->completed = 0;
-	if (is_released(tsk, litmus_clock())) {
+	if (is_early_releasing(tsk) || is_released(tsk, litmus_clock())) {
 		/* Uses __add_ready() instead of add_ready() because we already
 		 * hold the ready lock. */
 		__add_ready(&cpu_state->local_queues, tsk);
@@ -250,7 +250,7 @@ static void pedf_task_resume(struct task_struct  *tsk)
 
 static long pedf_admit_task(struct task_struct *tsk)
 {
-	if (task_cpu(tsk) == get_partition(tsk)) {
+	if (task_cpu(tsk) == tsk->rt_param.task_params.cpu) {
 		TRACE_TASK(tsk, "accepted by p-edf plugin.\n");
 		return 0;
 	} else
@@ -264,7 +264,7 @@ static void pedf_setup_domain_proc(void)
 	
 	struct cd_mapping *cpu_map, *domain_map;
 	
-	memset(&pedf_domain_proc_info, 0, sizeof(pedf_domain_proc_info));
+	memset(&pedf_domain_proc_info, sizeof(pedf_domain_proc_info), 0);
 	init_domain_proc_info(&pedf_domain_proc_info, num_rt_cpus, num_rt_cpus);
 	pedf_domain_proc_info.num_cpus = num_rt_cpus;
 	pedf_domain_proc_info.num_domains = num_rt_cpus;
@@ -312,7 +312,7 @@ static long pedf_deactivate_plugin(void)
 	return 0;
 }
 
-static struct sched_plugin pedf_plugin = {
+static struct sched_plugin pedf_plugin __cacheline_aligned_in_smp = {
 	.plugin_name            = "P-EDF",
 	.schedule               = pedf_schedule,
 	.task_wake_up           = pedf_task_resume,
