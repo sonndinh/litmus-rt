@@ -335,6 +335,7 @@ static struct sched_plugin pedf_plugin __cacheline_aligned_in_smp = {
 	.get_domain_proc_info   = pedf_get_domain_proc_info,
 	.activate_plugin        = pedf_activate_plugin,
 	.deactivate_plugin      = pedf_deactivate_plugin,
+	.complete_job           = complete_job,
 };
 
 
