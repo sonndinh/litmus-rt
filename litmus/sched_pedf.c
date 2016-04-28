@@ -38,7 +38,7 @@ static long pedf_get_domain_proc_info(struct domain_proc_info **ret)
  * it signaled a job completion */
 static void pedf_job_completion(struct task_struct *tsk, int budget_exhausted)
 {
-	sched_trace_task_completion(tsk, budget_exhausted);
+	//	sched_trace_task_completion(tsk, budget_exhausted);
 	TRACE_TASK(tsk, "job_completion(forced=%d).\n", budget_exhausted);
 
 	/* the task hasn't completed yet */
@@ -78,6 +78,7 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 	
 	/* prev's task state */
 	int exists, out_of_time, job_completed, self_suspends, preempt, resched;
+	int np;
 	
 	raw_spin_lock(&local_state->local_queues.ready_lock);
 	
@@ -93,6 +94,8 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 	/* preempt is true if task `prev` has lower priority than something on
 	 * the ready queue. */
 	preempt = edf_preemption_needed(&local_state->local_queues, prev);
+
+	np = exists && is_np(local_state->scheduled);
 	
 	/* check all conditions that make us reschedule */
 	resched = preempt;
@@ -100,14 +103,18 @@ static struct task_struct* pedf_schedule(struct task_struct * prev)
 	/* if `prev` suspends, it CANNOT be scheduled anymore => reschedule */
 	if (self_suspends)
 		resched = 1;
+
+	/* Request to exit np section */
+	if (np && (out_of_time || preempt || job_completed))
+		request_exit_np(local_state->scheduled);
 	
 	/* also check for (in-)voluntary job completions */
-	if (out_of_time || job_completed) {
+	if (!np && (out_of_time || job_completed)) {
 		pedf_job_completion(local_state->scheduled, !job_completed);
 		resched = 1;
 	}
 	
-	if (resched || !exists) {
+	if ((!np || self_suspends) && (resched || !exists)) {
 		/* First check if the previous task goes back onto the ready
 		 * queue, which it does if it did not self_suspend.
 		 */
@@ -270,7 +277,7 @@ static void pedf_setup_domain_proc(void)
 	
 	struct cd_mapping *cpu_map, *domain_map;
 	
-	memset(&pedf_domain_proc_info, sizeof(pedf_domain_proc_info), 0);
+	memset(&pedf_domain_proc_info, 0, sizeof(pedf_domain_proc_info));
 	init_domain_proc_info(&pedf_domain_proc_info, num_rt_cpus, num_rt_cpus);
 	pedf_domain_proc_info.num_cpus = num_rt_cpus;
 	pedf_domain_proc_info.num_domains = num_rt_cpus;
